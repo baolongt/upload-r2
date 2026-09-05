@@ -2,7 +2,10 @@ import { api } from './api.js';
 
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024;
 const STREAM_THRESHOLD = 128 * 1024 * 1024; // above this, stream to disk instead of buffering
-const RESPONSE_TIMEOUT_MS = 60_000; // give up waiting for a range request to answer
+// A request that delivers no bytes at all for this long is treated as dead and retried.
+// It covers the wait for headers and every gap during the body, so a connection that
+// silently stops mid-chunk can no longer wedge the download forever.
+const STALL_TIMEOUT_MS = 45_000;
 const URL_REFRESH_MARGIN_MS = 5 * 60_000; // re-sign a download URL before it expires
 // Buffering more than this in the page is not something a tab survives.
 const MAX_MEMORY_DOWNLOAD = 2 * 1024 * 1024 * 1024;
@@ -92,7 +95,7 @@ export class ChunkedDownload {
       // Small file and nothing to stream into: one request, one save.
       if (this.size <= this.chunkSize && !this.writer) {
         this._set('downloading');
-        const blob = await this._fetchRange(0, this.size - 1).then((r) => r.blob());
+        const blob = await this._downloadRange(0, this.size - 1);
         this._set('saving');
         saveBlob(blob, this.filename);
         this._set('done');
@@ -166,11 +169,8 @@ export class ChunkedDownload {
         next += 1;
         const start = index * this.chunkSize;
         const end = Math.min(start + this.chunkSize, this.size) - 1;
-        const response = await this._fetchRange(start, end);
-        ready.set(index, await response.blob());
-        this.loaded += end - start + 1;
-        this.lastProgressAt = Date.now();
-        this.onChange(this);
+        // Bytes are counted inside _downloadRange as they stream in.
+        ready.set(index, await this._downloadRange(start, end));
         flush();
       }
     };
@@ -204,42 +204,69 @@ export class ChunkedDownload {
     return this._url;
   }
 
-  async _fetchRange(start, end, attempt = 1) {
+  /**
+   * Fetches one range and returns it as a Blob, counting bytes into `loaded` as they
+   * arrive rather than in one jump at the end — on a multi-gigabyte file a whole chunk
+   * is far too coarse to show as progress, and a body that stops halfway has to be
+   * noticed rather than waited on forever.
+   */
+  async _downloadRange(start, end, attempt = 1) {
     if (this._canceled) throw new Canceled('Download canceled');
     const url = await this._currentUrl();
     const controller = new AbortController();
     this._controllers.add(controller);
-    // Only the wait for response headers is capped — once bytes start flowing a slow
-    // connection is allowed to take as long as it needs.
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, RESPONSE_TIMEOUT_MS);
+
+    let counted = 0; // bytes this attempt has already added to `loaded`
+    let stalled = false;
+    let lastByteAt = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastByteAt > STALL_TIMEOUT_MS) {
+        stalled = true;
+        controller.abort();
+      }
+    }, 2000);
+
     try {
       const response = await fetch(url, {
         headers: { Range: `bytes=${start}-${end}` },
         signal: controller.signal,
       });
-      clearTimeout(timer);
       if (response.status === 403) {
         // Almost always an expired signature: drop it and the retry will re-sign.
         this._url = null;
         throw new Error(`R2 refused bytes ${start}-${end} (expired link)`);
       }
       if (!response.ok) throw new Error(`R2 answered HTTP ${response.status} for bytes ${start}-${end}`);
-      return response;
+      if (!response.body) return await response.blob(); // no stream to read, take it whole
+
+      const reader = response.body.getReader();
+      const parts = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        counted += value.length;
+        lastByteAt = Date.now();
+        this.loaded += value.length;
+        this.lastProgressAt = lastByteAt;
+        this.onChange(this);
+      }
+      return new Blob(parts);
     } catch (error) {
-      clearTimeout(timer);
+      // A failed attempt must not leave its bytes on the counter.
+      this.loaded -= counted;
+      this.onChange(this);
+
       if (this._canceled) throw new Canceled('Download canceled');
       // An abort we caused ourselves must not look like the user cancelling.
-      const cause = timedOut
-        ? new Error(`R2 did not respond within ${RESPONSE_TIMEOUT_MS / 1000}s for bytes ${start}-${end}`)
+      const cause = stalled
+        ? new Error(`no data for ${STALL_TIMEOUT_MS / 1000}s on bytes ${start}-${end}`)
         : error;
       if (attempt >= 4) throw cause;
       await new Promise((resolve) => setTimeout(resolve, 2 ** attempt * 500));
-      return this._fetchRange(start, end, attempt + 1);
+      return this._downloadRange(start, end, attempt + 1);
     } finally {
+      clearInterval(watchdog);
       this._controllers.delete(controller);
     }
   }

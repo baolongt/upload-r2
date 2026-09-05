@@ -258,13 +258,17 @@ function fileRow(file) {
       saving: 'Handing the file to the browser…',
     };
 
+    const samples = [];
     const render = (d) => {
       bar.style.width = `${(d.progress * 100).toFixed(1)}%`;
       if (d.state === 'downloading') {
+        const speed = speedOf({ samples }, d.loaded);
+        const remaining = speed ? (d.size - d.loaded) / speed : NaN;
         const stalled = d.stalledForSeconds;
         const warning = stalled > 10 ? ` · no data for ${Math.round(stalled)}s, retrying` : '';
+        const rate = speed && !warning ? ` · ${formatBytes(speed)}/s · ${formatDuration(remaining)} left` : '';
         status.textContent =
-          `${(d.progress * 100).toFixed(1)}% · ${formatBytes(d.loaded)} of ${formatBytes(d.size)}${warning}`;
+          `${(d.progress * 100).toFixed(1)}% · ${formatBytes(d.loaded)} of ${formatBytes(d.size)}${rate}${warning}`;
       } else if (d.state === 'error') {
         status.textContent = `Failed: ${d.error?.message ?? 'unknown error'}`;
         node.classList.add('error');

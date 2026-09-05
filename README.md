@@ -37,7 +37,12 @@ browser                         this server                 Cloudflare R2
 - Files over 128 MB stream straight to disk via the File System Access API, so a
   50 GB download never has to fit in memory (Chromium-based browsers); elsewhere the
   chunks are collected as Blobs and saved at the end
-- Progress bar, cancel, and retry on failed ranges
+- Byte-level progress with speed and ETA, a cancel button, and retry on failed ranges
+- The presigned URL is re-signed mid-download, so a transfer that runs past the
+  one-hour signature lifetime does not start failing halfway through
+- A range that goes 45s without delivering a byte is abandoned and retried, rather
+  than leaving the download wedged
+- Over 2 GB without disk streaming is refused up front instead of freezing the tab
 
 **Access control**
 - One shared password via `APP_PASSWORD`; leave it unset and the app stays open
