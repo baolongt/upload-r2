@@ -4,6 +4,11 @@ async function request(url, options = {}) {
     ...options,
     headers: options.body ? { 'content-type': 'application/json', ...options.headers } : options.headers,
   });
+  if (response.status === 401) {
+    // The session expired or was cleared; the login page takes it from here.
+    location.href = '/login';
+    throw new Error('Not signed in');
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `${options.method || 'GET'} ${url} failed (${response.status})`);
   return payload;
@@ -11,6 +16,8 @@ async function request(url, options = {}) {
 
 export const api = {
   config: () => request('/api/config'),
+
+  logout: () => request('/api/logout', { method: 'POST', body: '{}' }),
 
   createUpload: (file, partSize) =>
     request('/api/uploads/create', {

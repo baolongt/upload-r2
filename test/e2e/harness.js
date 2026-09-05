@@ -7,7 +7,7 @@ import { createMockR2 } from '../mock-r2.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-async function startServer(endpoint, port) {
+async function startServer(endpoint, port, extraEnv) {
   const child = spawn(process.execPath, [path.join(root, 'server', 'index.js')], {
     env: {
       ...process.env,
@@ -17,6 +17,7 @@ async function startServer(endpoint, port) {
       R2_ACCESS_KEY_ID: 'test-access-key',
       R2_SECRET_ACCESS_KEY: 'test-secret-key',
       R2_FORCE_PATH_STYLE: 'true',
+      ...extraEnv,
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -25,7 +26,8 @@ async function startServer(endpoint, port) {
   const base = `http://127.0.0.1:${port}`;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
-      if ((await fetch(`${base}/api/config`)).ok) return { child, base };
+      // /healthz, not /api/config: the latter sits behind the password when one is set.
+      if ((await fetch(`${base}/healthz`)).ok) return { child, base };
     } catch {
       /* not listening yet */
     }
@@ -39,12 +41,24 @@ async function startServer(endpoint, port) {
  * Brings up the whole stack for one test and tears it down afterwards.
  * `problems` collects page errors so a test can assert the console stayed clean.
  */
-export async function startStack(t, { port, partDelayMs = 0 } = {}) {
+export async function startStack(t, { port, partDelayMs = 0, password } = {}) {
   const mock = createMockR2({ bucket: 'demo', partDelayMs });
   const endpoint = await mock.listen();
-  const { child, base } = await startServer(endpoint, port);
+
+  // Registered before anything else can throw: a stray server or mock left
+  // listening would keep the test runner alive forever.
+  let child;
+  let browser;
+  t.after(async () => {
+    await browser?.close();
+    child?.kill();
+    await mock.close();
+  });
+
+  ({ child } = await startServer(endpoint, port, password ? { APP_PASSWORD: password } : {}));
+  const base = `http://127.0.0.1:${port}`;
   // CHROMIUM_PATH lets CI point at a browser Playwright did not download itself.
-  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
+  browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
 
@@ -54,14 +68,11 @@ export async function startStack(t, { port, partDelayMs = 0 } = {}) {
     if (message.type() === 'error') problems.push(message.text());
   });
 
-  t.after(async () => {
-    await browser.close();
-    child.kill();
-    await mock.close();
-  });
-
   await page.goto(base);
-  await page.waitForFunction(() => document.getElementById('bucket-badge').textContent === 'r2://demo');
+  // With a password set the app redirects to the login form, so the caller drives it.
+  if (!password) {
+    await page.waitForFunction(() => document.getElementById('bucket-badge').textContent === 'r2://demo');
+  }
 
   return { mock, base, browser, page, problems };
 }

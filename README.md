@@ -39,6 +39,12 @@ browser                         this server                 Cloudflare R2
   chunks are collected as Blobs and saved at the end
 - Progress bar, cancel, and retry on failed ranges
 
+**Access control**
+- One shared password via `APP_PASSWORD`; leave it unset and the app stays open
+- Session is an HMAC-signed, HttpOnly cookie — no session store, no extra dependency
+- Password compared in constant time, and repeated failures from one address are throttled
+- `/healthz` stays reachable without a session so platform health checks still pass
+
 **Server**
 - Presigned URLs only — no proxying, no temp files, no memory pressure
 - Object keys are generated server-side and validated on the way back in, so a browser
@@ -73,6 +79,9 @@ needs the latter two. Put the values in `.env`:
 | `CORS_ORIGIN` | Origins allowed to reach the bucket from a browser |
 | `R2_FORCE_PATH_STYLE` | `true` for MinIO or other S3 mocks |
 | `PORT` | Port to listen on (default 3000; Railway sets this for you) |
+| `APP_PASSWORD` | Password to enter the app. Unset = no login at all |
+| `SESSION_SECRET` | Cookie signing key. Derived from `APP_PASSWORD` when unset |
+| `SESSION_TTL_HOURS` | How long a sign-in lasts (default 168 = 7 days) |
 
 ### 2. Bucket CORS — required
 
@@ -128,6 +137,7 @@ R2_ACCOUNT_ID=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=...
+APP_PASSWORD=...
 ```
 
 Do not set `PORT`. `CORS_ORIGIN` is optional on Railway: with nothing set the app
@@ -156,7 +166,9 @@ that aborts incomplete multipart uploads after a few days.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/healthz` | Health check for the platform |
+| `GET` | `/healthz` | Health check for the platform (never behind the password) |
+| `POST` | `/api/login` | Exchange the password for a session cookie |
+| `POST` | `/api/logout` | Drop the session cookie |
 | `GET` | `/api/config` | Bucket name and client defaults |
 | `POST` | `/api/uploads/create` | Reserve a key, open a multipart upload |
 | `POST` | `/api/uploads/sign` | Presigned URLs for a batch of part numbers |
@@ -206,10 +218,31 @@ arrived as 8 chunks and hashes byte-for-byte, then downloads it back with range
 requests and hashes it again. A second test pauses an upload halfway, reloads the
 page, hands the same file back and checks that only the missing chunks are sent.
 
+## Password
+
+Set `APP_PASSWORD` and the whole app — the page and every API route — needs a sign-in:
+
+```
+APP_PASSWORD=something-long-and-random
+```
+
+The password is exchanged once at `/login` for an HMAC-signed, HttpOnly cookie that
+lasts `SESSION_TTL_HOURS` (7 days by default). Nothing is stored server-side: the
+cookie is just a signed expiry, and the signing key is derived from the password, so
+changing the password signs everyone out. Set `SESSION_SECRET` explicitly if you would
+rather sessions survive a password change.
+
+Comparisons are constant-time, and ten wrong guesses from one address buy a 15-minute
+timeout. Leave `APP_PASSWORD` unset and the app runs open — the server says so on
+startup.
+
+This is one shared password for one deployment, not user accounts. If you need per-user
+access, roles, or an audit trail of who uploaded what, put the app behind a real
+identity provider instead.
+
 ## Notes before deploying
 
-- **There is no authentication.** Anyone who can reach the server can upload to and
-  delete from your bucket. Put it behind your own auth (a session check in
-  `server/index.js` before the routers is enough) before exposing it.
+- **Set `APP_PASSWORD`.** Without it, anyone who can reach the server can upload to and
+  delete from your bucket.
 - Consider an R2 lifecycle rule to abort incomplete multipart uploads after a few
   days, so cancelled uploads do not accumulate storage cost.

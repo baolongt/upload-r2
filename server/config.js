@@ -40,6 +40,12 @@ export const config = {
   keyPrefix: (process.env.R2_KEY_PREFIX ?? 'uploads/').replace(/^\/+/, ''),
   // Lifetime of the presigned PUT/GET URLs handed to the browser.
   presignExpires: int('PRESIGN_EXPIRES', 3600),
+  // Shared password for the whole app. Empty means the app stays open to anyone.
+  password: process.env.APP_PASSWORD || '',
+  // Key used to sign session cookies. Derived from the password when unset, so
+  // sessions survive a restart without a second variable to manage.
+  sessionSecret: process.env.SESSION_SECRET || '',
+  sessionTtlHours: int('SESSION_TTL_HOURS', 24 * 7),
   // Hard ceiling enforced when a browser asks to start an upload.
   maxFileSize: int('MAX_FILE_SIZE', 5 * 1024 * 1024 * 1024 * 1024), // 5 TiB, the R2 object limit
   // Origin allowed to talk to the bucket directly, used by scripts/apply-cors.js.

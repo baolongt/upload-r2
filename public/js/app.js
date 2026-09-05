@@ -313,6 +313,14 @@ api
     el('bucket-badge').textContent = `r2://${config.bucket}`;
     partSizeEl.value = String(config.defaultPartSize);
     concurrencyEl.value = String(config.defaultConcurrency);
+    if (config.auth) {
+      const logout = el('logout');
+      logout.hidden = false;
+      logout.addEventListener('click', async () => {
+        await api.logout().catch(() => {});
+        location.href = '/login';
+      });
+    }
     el('hint').textContent = canStreamToDisk
       ? 'Downloads over 128 MB stream straight to disk.'
       : 'Tip: use a Chromium browser to stream big downloads straight to disk.';
