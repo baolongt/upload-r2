@@ -1,6 +1,6 @@
 import { api } from './api.js';
 import { ChunkedUpload, UploadState, listResumable, forgetResumable, matchesRecord } from './uploader.js';
-import { ChunkedDownload, canStreamToDisk } from './downloader.js';
+import { ChunkedDownload, canStreamToDisk, openDiskWriter, shouldStreamToDisk } from './downloader.js';
 
 const el = (id) => document.getElementById(id);
 const dropzone = el('dropzone');
@@ -234,8 +234,25 @@ function fileRow(file) {
   status.textContent = 'Ready';
 
   const download = button('Download', '', async () => {
+    // The save dialog has to be opened here, while the click is still counted as a
+    // user gesture — asking for the presigned URL first would spend it, and the
+    // dialog would then never appear.
+    let writer = null;
+    if (shouldStreamToDisk(file.size)) {
+      try {
+        status.textContent = 'Choose where to save…';
+        writer = await openDiskWriter(file.name);
+      } catch (error) {
+        status.textContent = error?.name === 'AbortError' ? 'Ready' : `Failed: ${error.message}`;
+        return;
+      }
+    } else if (file.size > 512 * 1024 * 1024) {
+      status.textContent = 'Buffering in memory (browser cannot stream to disk)…';
+    }
+
     const job = new ChunkedDownload(file.key, {
       concurrency: Number(concurrencyEl.value),
+      writer,
       onChange: (d) => {
         bar.style.width = `${(d.progress * 100).toFixed(1)}%`;
         if (d.state === 'downloading') {

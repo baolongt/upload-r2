@@ -2,8 +2,12 @@ import { api } from './api.js';
 
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024;
 const STREAM_THRESHOLD = 128 * 1024 * 1024; // above this, stream to disk instead of buffering
+const RESPONSE_TIMEOUT_MS = 60_000; // give up waiting for a range request to answer
 
 export const canStreamToDisk = typeof window !== 'undefined' && 'showSaveFilePicker' in window;
+
+/** Files this big are streamed to disk rather than buffered in the page. */
+export const shouldStreamToDisk = (size) => canStreamToDisk && size > STREAM_THRESHOLD;
 
 class Canceled extends Error {}
 
@@ -16,11 +20,15 @@ class Canceled extends Error {}
  * those on disk) and stitched together at the end.
  */
 export class ChunkedDownload {
-  constructor(key, { chunkSize = DEFAULT_CHUNK_SIZE, concurrency = 4, onChange = () => {} } = {}) {
+  constructor(key, { chunkSize = DEFAULT_CHUNK_SIZE, concurrency = 4, onChange = () => {}, writer = null } = {}) {
     this.key = key;
     this.chunkSize = chunkSize;
     this.concurrency = Math.max(1, concurrency);
     this.onChange = onChange;
+    // A disk writer the caller opened while the user's click was still fresh.
+    // The file picker needs that user gesture, and it does not survive the round
+    // trip for the presigned URL — so it cannot be opened from in here.
+    this.writer = writer;
 
     this.state = 'idle';
     this.error = null;
@@ -55,8 +63,8 @@ export class ChunkedDownload {
       this.size = info.size;
       this.filename = info.filename;
 
-      // Small file, or no streaming support: let the browser handle it in one go.
-      if (this.size <= this.chunkSize) {
+      // Small file and nothing to stream into: one request, one save.
+      if (this.size <= this.chunkSize && !this.writer) {
         this._set('downloading');
         const blob = await this._fetchRange(info.url, 0, this.size - 1).then((r) => r.blob());
         saveBlob(blob, this.filename);
@@ -64,8 +72,7 @@ export class ChunkedDownload {
         return;
       }
 
-      const useDisk = canStreamToDisk && this.size > STREAM_THRESHOLD;
-      const writer = useDisk ? await openDiskWriter(this.filename) : new BlobCollector();
+      const writer = this.writer ?? new BlobCollector();
       this._set('downloading');
 
       await this._pump(info.url, writer);
@@ -143,16 +150,29 @@ export class ChunkedDownload {
     if (this._canceled) throw new Canceled('Download canceled');
     const controller = new AbortController();
     this._controllers.add(controller);
+    // Only the wait for response headers is capped — once bytes start flowing a slow
+    // connection is allowed to take as long as it needs.
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, RESPONSE_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         headers: { Range: `bytes=${start}-${end}` },
         signal: controller.signal,
       });
+      clearTimeout(timer);
       if (!response.ok) throw new Error(`R2 answered HTTP ${response.status} for bytes ${start}-${end}`);
       return response;
     } catch (error) {
+      clearTimeout(timer);
       if (this._canceled) throw new Canceled('Download canceled');
-      if (attempt >= 4) throw error;
+      // An abort we caused ourselves must not look like the user cancelling.
+      const cause = timedOut
+        ? new Error(`R2 did not respond within ${RESPONSE_TIMEOUT_MS / 1000}s for bytes ${start}-${end}`)
+        : error;
+      if (attempt >= 4) throw cause;
       await new Promise((resolve) => setTimeout(resolve, 2 ** attempt * 500));
       return this._fetchRange(url, start, end, attempt + 1);
     } finally {
@@ -161,7 +181,12 @@ export class ChunkedDownload {
   }
 }
 
-async function openDiskWriter(filename) {
+/**
+ * Must be called straight from the click handler: the browser only opens the save
+ * dialog while the user's gesture is still active. Throws AbortError if the user
+ * dismisses the dialog.
+ */
+export async function openDiskWriter(filename) {
   const handle = await window.showSaveFilePicker({ suggestedName: filename });
   const stream = await handle.createWritable();
   return {
@@ -193,5 +218,8 @@ function saveBlob(blob, filename) {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  // Revoked when the page goes away rather than on a timer: a multi-gigabyte blob
+  // can still be being written to disk long after any timeout we would pick, and
+  // revoking early truncates the download.
+  window.addEventListener('pagehide', () => URL.revokeObjectURL(url), { once: true });
 }
