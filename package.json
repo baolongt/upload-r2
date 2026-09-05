@@ -1,0 +1,36 @@
+{
+  "name": "upload-r2",
+  "version": "1.0.0",
+  "description": "Upload and download very large files to Cloudflare R2 with browser-side chunking",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "cors": "node scripts/apply-cors.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:e2e": "node --test \"test/e2e/*.e2e.js\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baolongt/upload-r2.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/baolongt/upload-r2/issues"
+  },
+  "homepage": "https://github.com/baolongt/upload-r2#readme",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1127.0",
+    "@aws-sdk/s3-request-presigner": "^3.1127.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

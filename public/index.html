@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>R2 Large File Transfer</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">📦</span>
+        <div>
+          <h1>R2 Large File Transfer</h1>
+          <p class="muted">Chunked in the browser · uploaded straight to Cloudflare R2</p>
+        </div>
+      </div>
+      <div class="bucket" id="bucket-badge">…</div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose files to upload">
+          <input type="file" id="file-input" multiple hidden />
+          <div class="dropzone-inner">
+            <span class="dz-icon">⬆</span>
+            <strong>Drop files here</strong>
+            <span class="muted">or click to browse — multi-gigabyte files are fine</span>
+          </div>
+        </div>
+
+        <div class="settings">
+          <label>
+            Chunk size
+            <select id="part-size">
+              <option value="5242880">5 MB</option>
+              <option value="8388608">8 MB</option>
+              <option value="16777216" selected>16 MB</option>
+              <option value="33554432">32 MB</option>
+              <option value="67108864">64 MB</option>
+              <option value="134217728">128 MB</option>
+            </select>
+          </label>
+          <label>
+            Parallel chunks
+            <select id="concurrency">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="4" selected>4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+            </select>
+          </label>
+          <p class="muted hint" id="hint"></p>
+        </div>
+
+        <div id="resumable" class="resumable" hidden></div>
+        <div id="uploads" class="list"></div>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Files in the bucket</h2>
+          <button class="ghost" id="refresh">Refresh</button>
+        </div>
+        <div id="files" class="list">
+          <p class="muted empty">Loading…</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
