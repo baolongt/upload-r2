@@ -3,6 +3,9 @@ import { api } from './api.js';
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024;
 const STREAM_THRESHOLD = 128 * 1024 * 1024; // above this, stream to disk instead of buffering
 const RESPONSE_TIMEOUT_MS = 60_000; // give up waiting for a range request to answer
+const URL_REFRESH_MARGIN_MS = 5 * 60_000; // re-sign a download URL before it expires
+// Buffering more than this in the page is not something a tab survives.
+const MAX_MEMORY_DOWNLOAD = 2 * 1024 * 1024 * 1024;
 
 export const canStreamToDisk = typeof window !== 'undefined' && 'showSaveFilePicker' in window;
 
@@ -34,13 +37,27 @@ export class ChunkedDownload {
     this.error = null;
     this.loaded = 0;
     this.size = 0;
+    // When bytes last arrived, so the UI can say "stuck" instead of just sitting there.
+    this.lastProgressAt = Date.now();
     this.filename = key;
     this._canceled = false;
     this._controllers = new Set();
+    this._url = null;
+    this._urlExpiresAt = 0;
+    this._refresh = Promise.resolve();
   }
 
   get progress() {
     return this.size ? Math.min(this.loaded / this.size, 1) : 0;
+  }
+
+  /** Seconds since the last byte arrived, while a transfer is in flight. */
+  get stalledForSeconds() {
+    return this.state === 'downloading' ? (Date.now() - this.lastProgressAt) / 1000 : 0;
+  }
+
+  get isActive() {
+    return ['preparing', 'downloading', 'assembling', 'saving'].includes(this.state);
   }
 
   cancel() {
@@ -59,14 +76,24 @@ export class ChunkedDownload {
   async start() {
     try {
       this._set('preparing');
-      const info = await api.downloadUrl(this.key);
+      const info = await this._signUrl();
       this.size = info.size;
       this.filename = info.filename;
+
+      // A multi-gigabyte file collected as Blobs will take the tab down with it.
+      if (!this.writer && this.size > MAX_MEMORY_DOWNLOAD) {
+        throw new Error(
+          `This file is ${(this.size / 1024 ** 3).toFixed(1)} GB and this browser cannot stream ` +
+            'downloads to disk. Open the app in Chrome or Edge, which can write the file out as ' +
+            'it arrives instead of holding it in memory.'
+        );
+      }
 
       // Small file and nothing to stream into: one request, one save.
       if (this.size <= this.chunkSize && !this.writer) {
         this._set('downloading');
-        const blob = await this._fetchRange(info.url, 0, this.size - 1).then((r) => r.blob());
+        const blob = await this._fetchRange(0, this.size - 1).then((r) => r.blob());
+        this._set('saving');
         saveBlob(blob, this.filename);
         this._set('done');
         return;
@@ -75,9 +102,16 @@ export class ChunkedDownload {
       const writer = this.writer ?? new BlobCollector();
       this._set('downloading');
 
-      await this._pump(info.url, writer);
+      await this._pump(writer);
+
+      // Stitching a multi-gigabyte Blob together is not instant, and neither is
+      // handing it to the browser — both used to look like the download had died.
+      this._set('assembling');
       const result = await writer.close();
-      if (result) saveBlob(result, this.filename);
+      if (result) {
+        this._set('saving');
+        saveBlob(result, this.filename);
+      }
       this._set('done');
     } catch (error) {
       if (error instanceof Canceled || error?.name === 'AbortError') {
@@ -92,7 +126,7 @@ export class ChunkedDownload {
    * Runs `concurrency` range requests at a time but only ever holds a small
    * window of finished chunks, so memory stays bounded no matter the file size.
    */
-  async _pump(url, writer) {
+  async _pump(writer) {
     const total = Math.ceil(this.size / this.chunkSize);
     const ready = new Map();
     const lookahead = this.concurrency * 2;
@@ -132,9 +166,10 @@ export class ChunkedDownload {
         next += 1;
         const start = index * this.chunkSize;
         const end = Math.min(start + this.chunkSize, this.size) - 1;
-        const response = await this._fetchRange(url, start, end);
+        const response = await this._fetchRange(start, end);
         ready.set(index, await response.blob());
         this.loaded += end - start + 1;
+        this.lastProgressAt = Date.now();
         this.onChange(this);
         flush();
       }
@@ -146,8 +181,32 @@ export class ChunkedDownload {
     if (writeError) throw writeError;
   }
 
-  async _fetchRange(url, start, end, attempt = 1) {
+  /**
+   * Presigned URLs live an hour; a download of tens of gigabytes can outlast that,
+   * so the URL is re-signed before it lapses rather than every range suddenly 403ing
+   * halfway through.
+   */
+  async _signUrl() {
+    const info = await api.downloadUrl(this.key);
+    this._url = info.url;
+    this._urlExpiresAt = Date.now() + info.expiresIn * 1000;
+    return info;
+  }
+
+  async _currentUrl() {
+    if (this._url && this._urlExpiresAt - Date.now() > URL_REFRESH_MARGIN_MS) return this._url;
+    const refresh = this._refresh.then(() => {
+      if (this._url && this._urlExpiresAt - Date.now() > URL_REFRESH_MARGIN_MS) return; // someone beat us to it
+      return this._signUrl();
+    });
+    this._refresh = refresh.catch(() => {});
+    await refresh;
+    return this._url;
+  }
+
+  async _fetchRange(start, end, attempt = 1) {
     if (this._canceled) throw new Canceled('Download canceled');
+    const url = await this._currentUrl();
     const controller = new AbortController();
     this._controllers.add(controller);
     // Only the wait for response headers is capped — once bytes start flowing a slow
@@ -163,6 +222,11 @@ export class ChunkedDownload {
         signal: controller.signal,
       });
       clearTimeout(timer);
+      if (response.status === 403) {
+        // Almost always an expired signature: drop it and the retry will re-sign.
+        this._url = null;
+        throw new Error(`R2 refused bytes ${start}-${end} (expired link)`);
+      }
       if (!response.ok) throw new Error(`R2 answered HTTP ${response.status} for bytes ${start}-${end}`);
       return response;
     } catch (error) {
@@ -174,7 +238,7 @@ export class ChunkedDownload {
         : error;
       if (attempt >= 4) throw cause;
       await new Promise((resolve) => setTimeout(resolve, 2 ** attempt * 500));
-      return this._fetchRange(url, start, end, attempt + 1);
+      return this._fetchRange(start, end, attempt + 1);
     } finally {
       this._controllers.delete(controller);
     }

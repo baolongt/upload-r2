@@ -233,6 +233,8 @@ function fileRow(file) {
   const bar = node.querySelector('.bar > span');
   status.textContent = 'Ready';
 
+  let remove;
+
   const download = button('Download', '', async () => {
     // The save dialog has to be opened here, while the click is still counted as a
     // user gesture — asking for the presigned URL first would spend it, and the
@@ -250,30 +252,54 @@ function fileRow(file) {
       status.textContent = 'Buffering in memory (browser cannot stream to disk)…';
     }
 
+    const labels = {
+      preparing: 'Requesting download link…',
+      assembling: 'Assembling the file — this can take a while for a large one…',
+      saving: 'Handing the file to the browser…',
+    };
+
+    const render = (d) => {
+      bar.style.width = `${(d.progress * 100).toFixed(1)}%`;
+      if (d.state === 'downloading') {
+        const stalled = d.stalledForSeconds;
+        const warning = stalled > 10 ? ` · no data for ${Math.round(stalled)}s, retrying` : '';
+        status.textContent =
+          `${(d.progress * 100).toFixed(1)}% · ${formatBytes(d.loaded)} of ${formatBytes(d.size)}${warning}`;
+      } else if (d.state === 'error') {
+        status.textContent = `Failed: ${d.error?.message ?? 'unknown error'}`;
+        node.classList.add('error');
+      } else if (d.state === 'done') {
+        status.textContent = 'Downloaded';
+        node.classList.add('done');
+      } else {
+        status.textContent = labels[d.state] ?? capitalize(d.state);
+      }
+    };
+
     const job = new ChunkedDownload(file.key, {
       concurrency: Number(concurrencyEl.value),
       writer,
-      onChange: (d) => {
-        bar.style.width = `${(d.progress * 100).toFixed(1)}%`;
-        if (d.state === 'downloading') {
-          status.textContent = `${(d.progress * 100).toFixed(1)}% · ${formatBytes(d.loaded)} of ${formatBytes(d.size)}`;
-        } else if (d.state === 'error') {
-          status.textContent = `Failed: ${d.error?.message ?? 'unknown error'}`;
-          node.classList.add('error');
-        } else if (d.state === 'done') {
-          status.textContent = 'Downloaded';
-          node.classList.add('done');
-        } else {
-          status.textContent = capitalize(d.state);
-        }
-      },
+      onChange: render,
     });
+
+    // A download that stops receiving data used to look identical to one that is
+    // simply slow, so the status is refreshed on a timer too, not only on progress.
+    const ticker = setInterval(() => render(job), 1000);
+    const cancel = button('Cancel', 'ghost danger', () => job.cancel());
     download.disabled = true;
-    await job.start();
-    download.disabled = false;
+    remove.disabled = true;
+    actions.append(cancel);
+    try {
+      await job.start();
+    } finally {
+      clearInterval(ticker);
+      cancel.remove();
+      download.disabled = false;
+      remove.disabled = false;
+    }
   });
 
-  const remove = button('Delete', 'ghost danger', async () => {
+  remove = button('Delete', 'ghost danger', async () => {
     if (!confirm(`Delete ${file.name} from the bucket?`)) return;
     remove.disabled = true;
     try {
