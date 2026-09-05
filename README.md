@@ -56,8 +56,11 @@ npm start                # http://localhost:3000
 
 ### 1. Credentials
 
-In the Cloudflare dashboard: **R2 → Manage API tokens → Create API token**, with
-*Object Read & Write* on the bucket. Put the values in `.env`:
+In the Cloudflare dashboard: **R2 → Manage API tokens → Create API token**
+(`https://dash.cloudflare.com/<account_id>/r2/api-tokens`), with *Object Read & Write*
+scoped to your bucket. The result page shows a *Token value* for the REST API and,
+below it, the **Access Key ID** and **Secret Access Key** for the S3 API — this app
+needs the latter two. Put the values in `.env`:
 
 | Variable | What it is |
 | --- | --- |
@@ -91,7 +94,17 @@ The browser talks to R2 directly, so the bucket must allow it. `npm run cors` ap
 and send it back when completing the multipart upload. Without it every upload fails
 at the first chunk.
 
-Set `CORS_ORIGIN` to your real origin (comma-separate several) before deploying.
+Set `CORS_ORIGIN` to your real origin (comma-separate several) before deploying. The
+origin is where the *page* is served from, not the R2 endpoint, and it must carry no
+trailing slash. Re-run the script whenever the domain changes — the rules live on the
+bucket, so the running server never notices a stale one.
+
+**If `npm run cors` fails with `AccessDenied`**: editing bucket configuration needs an
+R2 token with **Admin Read & Write**. The *Object Read & Write* token the app itself
+runs on cannot do it. Either create a second token with the wider permission just for
+this, or paste the rules above into the dashboard by hand under
+**R2 → your bucket → Settings → CORS Policy** — the script prints them for you when it
+hits this error.
 
 ## Deploy to Railway
 
@@ -132,7 +145,8 @@ railway run npm run cors
 
 `railway run` executes locally with the service's variables, so it picks up
 `RAILWAY_PUBLIC_DOMAIN` and allows the right origin. Re-run it whenever the domain
-changes. To check what is currently applied, the script prints the rules back.
+changes. To check what is currently applied, the script prints the rules back. It needs
+an *Admin Read & Write* token — see the CORS section above if it answers `AccessDenied`.
 
 Two things worth doing before letting anyone else near the URL: put the app behind
 authentication (see the notes at the end of this file), and add an R2 lifecycle rule

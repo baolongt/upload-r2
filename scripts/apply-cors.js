@@ -6,6 +6,11 @@
  *
  *   npm run cors           # uses CORS_ORIGIN from .env
  *   CORS_ORIGIN=https://app.example.com npm run cors
+ *
+ * Note: editing bucket configuration needs an R2 API token with "Admin Read &
+ * Write". The "Object Read & Write" token the app itself runs on is not enough,
+ * and R2 answers AccessDenied. Setting the same rules by hand in the dashboard
+ * (bucket -> Settings -> CORS Policy) works just as well.
  */
 import { GetBucketCorsCommand, PutBucketCorsCommand } from '@aws-sdk/client-s3';
 import { BUCKET, r2 } from '../server/r2.js';
@@ -24,8 +29,30 @@ const rules = [
   },
 ];
 
-await r2.send(new PutBucketCorsCommand({ Bucket: BUCKET, CORSConfiguration: { CORSRules: rules } }));
-console.log(`CORS applied to ${BUCKET} for: ${origins.join(', ')}`);
+try {
+  await r2.send(new PutBucketCorsCommand({ Bucket: BUCKET, CORSConfiguration: { CORSRules: rules } }));
+  console.log(`CORS applied to ${BUCKET} for: ${origins.join(', ')}`);
 
-const current = await r2.send(new GetBucketCorsCommand({ Bucket: BUCKET }));
-console.log(JSON.stringify(current.CORSRules, null, 2));
+  const current = await r2.send(new GetBucketCorsCommand({ Bucket: BUCKET }));
+  console.log(JSON.stringify(current.CORSRules, null, 2));
+} catch (error) {
+  if (error.name === 'AccessDenied' || error.$metadata?.httpStatusCode === 403) {
+    console.error(
+      [
+        '',
+        `Access denied while setting the CORS policy on "${BUCKET}".`,
+        '',
+        'Changing bucket configuration needs an R2 API token with "Admin Read & Write".',
+        'A token with only "Object Read & Write" (what the app itself needs) cannot do it.',
+        '',
+        'Either create an Admin Read & Write token and re-run this, or paste these rules',
+        'into the dashboard by hand: R2 -> your bucket -> Settings -> CORS Policy:',
+        '',
+        JSON.stringify(rules, null, 2),
+        '',
+      ].join('\n')
+    );
+    process.exit(1);
+  }
+  throw error;
+}
