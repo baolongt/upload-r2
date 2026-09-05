@@ -16,6 +16,9 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(here, '..', 'public'), { maxAge: '1h' }));
 
+// Railway (and any other platform) polls this to decide if the deploy is live.
+app.get('/healthz', (_req, res) => res.json({ status: 'ok', bucket: config.bucket }));
+
 app.get('/api/config', (_req, res) => {
   res.json({
     bucket: config.bucket,
@@ -39,7 +42,7 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(config.port, () => {
+app.listen(config.port, '0.0.0.0', () => {
   console.log(`upload-r2 listening on http://localhost:${config.port}`);
   console.log(`bucket: ${config.bucket}  endpoint: ${config.endpoint}`);
 });

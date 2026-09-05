@@ -69,6 +69,7 @@ In the Cloudflare dashboard: **R2 → Manage API tokens → Create API token**, 
 | `MAX_FILE_SIZE` | Upload ceiling in bytes (default 5 TiB, R2's object limit) |
 | `CORS_ORIGIN` | Origins allowed to reach the bucket from a browser |
 | `R2_FORCE_PATH_STYLE` | `true` for MinIO or other S3 mocks |
+| `PORT` | Port to listen on (default 3000; Railway sets this for you) |
 
 ### 2. Bucket CORS — required
 
@@ -92,10 +93,56 @@ at the first chunk.
 
 Set `CORS_ORIGIN` to your real origin (comma-separate several) before deploying.
 
+## Deploy to Railway
+
+`railway.json` and `nixpacks.toml` are already in the repo, so a deploy is just:
+
+```bash
+railway login
+railway init          # or: railway link, for an existing project
+railway up
+```
+
+Railway builds with Nixpacks, installs runtime dependencies only
+(`npm ci --omit=dev`, so Playwright never downloads a browser on the server),
+starts `node server/index.js` and waits for `/healthz` before switching traffic
+to the new deploy. `PORT` is injected by Railway and picked up automatically.
+
+**1. Set the variables** (Railway dashboard → Variables, or `railway variables --set`):
+
+```
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=...
+```
+
+Do not set `PORT`. `CORS_ORIGIN` is optional on Railway: with nothing set the app
+falls back to `https://$RAILWAY_PUBLIC_DOMAIN`, which is the domain Railway gave the
+service. Set it explicitly once you attach a custom domain (comma-separate several).
+
+**2. Generate a domain**: Settings → Networking → Generate Domain.
+
+**3. Apply the bucket CORS rules for that domain** — the browser uploads straight to
+R2, so this is not optional:
+
+```bash
+railway run npm run cors
+```
+
+`railway run` executes locally with the service's variables, so it picks up
+`RAILWAY_PUBLIC_DOMAIN` and allows the right origin. Re-run it whenever the domain
+changes. To check what is currently applied, the script prints the rules back.
+
+Two things worth doing before letting anyone else near the URL: put the app behind
+authentication (see the notes at the end of this file), and add an R2 lifecycle rule
+that aborts incomplete multipart uploads after a few days.
+
 ## API
 
 | Method | Route | Purpose |
 | --- | --- | --- |
+| `GET` | `/healthz` | Health check for the platform |
 | `GET` | `/api/config` | Bucket name and client defaults |
 | `POST` | `/api/uploads/create` | Reserve a key, open a multipart upload |
 | `POST` | `/api/uploads/sign` | Presigned URLs for a batch of part numbers |

@@ -43,7 +43,12 @@ export const config = {
   // Hard ceiling enforced when a browser asks to start an upload.
   maxFileSize: int('MAX_FILE_SIZE', 5 * 1024 * 1024 * 1024 * 1024), // 5 TiB, the R2 object limit
   // Origin allowed to talk to the bucket directly, used by scripts/apply-cors.js.
-  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  // Railway injects RAILWAY_PUBLIC_DOMAIN, so a deployed instance knows its own origin.
+  corsOrigin:
+    process.env.CORS_ORIGIN ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN
+      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+      : 'http://localhost:3000'),
 };
 
 export const limits = {

@@ -1,0 +1,7 @@
+# Only runtime dependencies are installed: Playwright is a dev dependency and
+# would otherwise try to download a browser during the build.
+[phases.install]
+cmds = ["npm ci --omit=dev"]
+
+[start]
+cmd = "node server/index.js"
