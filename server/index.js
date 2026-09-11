@@ -9,6 +9,8 @@ const { config } = await import('./config.js').catch((error) => {
 });
 const { uploadsRouter } = await import('./routes/uploads.js');
 const { filesRouter } = await import('./routes/files.js');
+const { adminRouter } = await import('./routes/admin.js');
+const shares = await import('./shares.js');
 const auth = await import('./auth.js');
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -30,22 +32,41 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(publicDir, 'login.html'));
 });
 
+/**
+ * One password field for everyone. The admin password opens the whole app; any
+ * other password is looked up against the recipient list, and whoever it belongs
+ * to gets their own files and nothing else.
+ */
 app.post('/api/login', async (req, res) => {
-  if (!auth.authEnabled) return res.json({ ok: true });
+  if (!auth.authEnabled) return res.json({ ok: true, role: 'admin' });
 
   await auth.jitter();
   if (auth.tooManyAttempts(req.ip)) {
     return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
   }
-  if (!auth.checkPassword(req.body?.password)) {
+
+  const password = req.body?.password;
+  const identity = auth.checkPassword(password)
+    ? { role: 'admin', sub: 'admin' }
+    : await identityForRecipient(password);
+
+  if (!identity) {
     auth.recordFailure(req.ip);
     return res.status(401).json({ error: 'Wrong password' });
   }
 
   auth.clearAttempts(req.ip);
-  auth.setSessionCookie(req, res, auth.signSession());
-  res.json({ ok: true });
+  auth.setSessionCookie(req, res, auth.signSession(identity));
+  res.json({ ok: true, role: identity.role });
 });
+
+async function identityForRecipient(password) {
+  const user = await shares.findUserByPassword(password).catch((error) => {
+    console.error('could not read the share list', error);
+    return null;
+  });
+  return user ? { role: 'user', sub: user.id, name: user.name, stamp: user.stamp } : null;
+}
 
 app.post('/api/logout', (req, res) => {
   auth.clearSessionCookie(req, res);
@@ -54,26 +75,50 @@ app.post('/api/logout', (req, res) => {
 
 // Everything past this point needs a session: the API answers 401 so the page can
 // react, a browser asking for a page is sent to the login form.
-app.use((req, res, next) => {
-  if (auth.isSignedIn(req)) return next();
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not signed in' });
-  res.redirect('/login');
+app.use(async (req, res, next) => {
+  const identity = auth.identityOf(req);
+  // A recipient who was deleted, or whose password was changed, loses the session
+  // that password opened.
+  const stale = identity?.role === 'user' && !(await stillValid(identity).catch(() => false));
+
+  if (!identity || stale) {
+    if (stale) auth.clearSessionCookie(req, res);
+    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not signed in' });
+    return res.redirect('/login');
+  }
+
+  req.identity = identity;
+  next();
 });
 
-app.use(express.static(publicDir, { maxAge: '1h' }));
+async function stillValid(identity) {
+  const user = await shares.getUser(identity.sub);
+  return Boolean(user) && user.stamp === identity.stamp;
+}
 
-app.get('/api/config', (_req, res) => {
+// The landing page depends on who is asking: the admin gets the full app, a
+// recipient gets the short list of what was shared with them.
+app.get(['/', '/index.html'], (req, res) => {
+  res.sendFile(path.join(publicDir, req.identity.role === 'admin' ? 'index.html' : 'shared.html'));
+});
+
+app.use(express.static(publicDir, { maxAge: '1h', index: false }));
+
+app.get('/api/config', (req, res) => {
   res.json({
     bucket: config.bucket,
     maxFileSize: config.maxFileSize,
     defaultPartSize: 16 * 1024 * 1024,
     defaultConcurrency: 4,
     auth: auth.authEnabled,
+    role: req.identity.role,
+    name: req.identity.name ?? null,
   });
 });
 
-app.use('/api/uploads', uploadsRouter);
+app.use('/api/uploads', auth.requireAdmin, uploadsRouter);
 app.use('/api/files', filesRouter);
+app.use('/api/admin', auth.requireAdmin, adminRouter);
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -91,7 +136,7 @@ app.listen(config.port, '0.0.0.0', () => {
   console.log(`bucket: ${config.bucket}  endpoint: ${config.endpoint}`);
   console.log(
     auth.authEnabled
-      ? 'auth: password required'
+      ? 'auth: APP_PASSWORD signs in as admin; every other password is looked up in the share list'
       : 'auth: OPEN — anyone who can reach this server can upload and delete. Set APP_PASSWORD to lock it down.'
   );
 });

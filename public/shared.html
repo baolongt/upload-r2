@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Your files</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">📦</span>
+        <div>
+          <h1>Your files</h1>
+          <p class="muted" id="greeting">Shared with you</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="ghost" id="logout">Sign out</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="section-head">
+          <h2>Ready to download</h2>
+          <button class="ghost" id="refresh">Refresh</button>
+        </div>
+        <p class="muted hint-line" id="hint"></p>
+        <div id="files" class="list">
+          <p class="muted empty">Loading…</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/js/shared.js"></script>
+  </body>
+</html>

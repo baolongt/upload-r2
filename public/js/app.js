@@ -1,8 +1,19 @@
 import { api } from './api.js';
 import { ChunkedUpload, UploadState, listResumable, forgetResumable, matchesRecord } from './uploader.js';
-import { ChunkedDownload, canStreamToDisk, openDiskWriter, shouldStreamToDisk } from './downloader.js';
+import { canStreamToDisk } from './downloader.js';
+import { fileRow } from './filerow.js';
+import { initRecipients, recipientsFilesChanged } from './recipients.js';
+import {
+  button,
+  capitalize,
+  el,
+  formatBytes,
+  formatDate,
+  formatDuration,
+  rowTemplate,
+  speedOf,
+} from './format.js';
 
-const el = (id) => document.getElementById(id);
 const dropzone = el('dropzone');
 const fileInput = el('file-input');
 const uploadsEl = el('uploads');
@@ -13,70 +24,7 @@ const concurrencyEl = el('concurrency');
 const uploads = new Map(); // id -> { upload, node, samples }
 let resumableRecords = listResumable();
 
-/* ---------- formatting helpers ---------- */
-
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes)) return '–';
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${UNITS[unit]}`;
-}
-
-function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return '–';
-  if (seconds < 60) return `${Math.ceil(seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
-
-const capitalize = (value) => value.charAt(0).toUpperCase() + value.slice(1);
-
-function formatDate(value) {
-  return new Date(value).toLocaleString();
-}
-
 /* ---------- upload rows ---------- */
-
-function rowTemplate(name, size) {
-  const node = document.createElement('div');
-  node.className = 'item';
-  node.innerHTML = `
-    <div class="item-head">
-      <span class="item-name"></span>
-      <span class="item-meta">${formatBytes(size)}</span>
-    </div>
-    <div class="bar"><span></span></div>
-    <div class="item-foot">
-      <span class="status"></span>
-      <span class="actions"></span>
-    </div>`;
-  node.querySelector('.item-name').textContent = name;
-  return node;
-}
-
-function button(label, className, onClick) {
-  const b = document.createElement('button');
-  b.textContent = label;
-  if (className) b.className = className;
-  b.addEventListener('click', onClick);
-  return b;
-}
-
-function speedOf(entry, loaded) {
-  const now = performance.now();
-  entry.samples.push({ t: now, loaded });
-  while (entry.samples.length > 2 && now - entry.samples[0].t > 5000) entry.samples.shift();
-  const first = entry.samples[0];
-  const elapsed = (now - first.t) / 1000;
-  if (elapsed < 0.4) return null;
-  return (loaded - first.loaded) / elapsed;
-}
 
 function renderUpload(upload) {
   const entry = uploads.get(upload.id);
@@ -209,117 +157,42 @@ function renderResumable() {
   }
 }
 
-/* ---------- bucket listing + downloads ---------- */
+/* ---------- bucket listing ---------- */
+
+// Kept around so the sharing panel can offer the same files as checkboxes.
+let bucketFiles = [];
 
 async function refreshFiles() {
   try {
     const { files } = await api.listFiles();
+    bucketFiles = files;
     filesEl.replaceChildren();
     if (files.length === 0) {
       filesEl.innerHTML = '<p class="muted empty">Nothing uploaded yet.</p>';
-      return;
+    } else {
+      for (const file of files) {
+        filesEl.append(
+          fileRow(file, {
+            concurrency: () => Number(concurrencyEl.value),
+            onDelete: () => {
+              bucketFiles = bucketFiles.filter((item) => item.key !== file.key);
+              recipientsFilesChanged();
+            },
+          })
+        );
+      }
     }
-    for (const file of files) filesEl.append(fileRow(file));
+    recipientsFilesChanged();
   } catch (error) {
     filesEl.innerHTML = `<p class="muted empty">Could not list files: ${error.message}</p>`;
   }
 }
 
-function fileRow(file) {
-  const node = rowTemplate(file.name, file.size);
-  node.querySelector('.item-meta').textContent = `${formatBytes(file.size)} · ${formatDate(file.lastModified)}`;
-  const status = node.querySelector('.status');
-  const actions = node.querySelector('.actions');
-  const bar = node.querySelector('.bar > span');
-  status.textContent = 'Ready';
-
-  let remove;
-
-  const download = button('Download', '', async () => {
-    // The save dialog has to be opened here, while the click is still counted as a
-    // user gesture — asking for the presigned URL first would spend it, and the
-    // dialog would then never appear.
-    let writer = null;
-    if (shouldStreamToDisk(file.size)) {
-      try {
-        status.textContent = 'Choose where to save…';
-        writer = await openDiskWriter(file.name);
-      } catch (error) {
-        status.textContent = error?.name === 'AbortError' ? 'Ready' : `Failed: ${error.message}`;
-        return;
-      }
-    } else if (file.size > 512 * 1024 * 1024) {
-      status.textContent = 'Buffering in memory (browser cannot stream to disk)…';
-    }
-
-    const labels = {
-      preparing: 'Requesting download link…',
-      assembling: 'Assembling the file — this can take a while for a large one…',
-      saving: 'Handing the file to the browser…',
-    };
-
-    const samples = [];
-    const render = (d) => {
-      bar.style.width = `${(d.progress * 100).toFixed(1)}%`;
-      if (d.state === 'downloading') {
-        const speed = speedOf({ samples }, d.loaded);
-        const remaining = speed ? (d.size - d.loaded) / speed : NaN;
-        const stalled = d.stalledForSeconds;
-        const warning = stalled > 10 ? ` · no data for ${Math.round(stalled)}s, retrying` : '';
-        const rate = speed && !warning ? ` · ${formatBytes(speed)}/s · ${formatDuration(remaining)} left` : '';
-        status.textContent =
-          `${(d.progress * 100).toFixed(1)}% · ${formatBytes(d.loaded)} of ${formatBytes(d.size)}${rate}${warning}`;
-      } else if (d.state === 'error') {
-        status.textContent = `Failed: ${d.error?.message ?? 'unknown error'}`;
-        node.classList.add('error');
-      } else if (d.state === 'done') {
-        status.textContent = 'Downloaded';
-        node.classList.add('done');
-      } else {
-        status.textContent = labels[d.state] ?? capitalize(d.state);
-      }
-    };
-
-    const job = new ChunkedDownload(file.key, {
-      concurrency: Number(concurrencyEl.value),
-      writer,
-      onChange: render,
-    });
-
-    // A download that stops receiving data used to look identical to one that is
-    // simply slow, so the status is refreshed on a timer too, not only on progress.
-    const ticker = setInterval(() => render(job), 1000);
-    const cancel = button('Cancel', 'ghost danger', () => job.cancel());
-    download.disabled = true;
-    remove.disabled = true;
-    actions.append(cancel);
-    try {
-      await job.start();
-    } finally {
-      clearInterval(ticker);
-      cancel.remove();
-      download.disabled = false;
-      remove.disabled = false;
-    }
-  });
-
-  remove = button('Delete', 'ghost danger', async () => {
-    if (!confirm(`Delete ${file.name} from the bucket?`)) return;
-    remove.disabled = true;
-    try {
-      await api.deleteFile(file.key);
-      node.remove();
-    } catch (error) {
-      status.textContent = `Delete failed: ${error.message}`;
-      remove.disabled = false;
-    }
-  });
-
-  actions.append(download, remove);
-  return node;
-}
-
 /* ---------- wiring ---------- */
+
+// Kicked off here so the sharing panel can wait for the first listing before it
+// offers those files as checkboxes.
+const listed = refreshFiles();
 
 dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('keydown', (event) => {
@@ -356,7 +229,7 @@ window.addEventListener('beforeunload', (event) => {
 
 api
   .config()
-  .then((config) => {
+  .then(async (config) => {
     el('bucket-badge').textContent = `r2://${config.bucket}`;
     partSizeEl.value = String(config.defaultPartSize);
     concurrencyEl.value = String(config.defaultConcurrency);
@@ -371,6 +244,13 @@ api
     el('hint').textContent = canStreamToDisk
       ? 'Downloads over 128 MB stream straight to disk.'
       : 'Tip: use a Chromium browser to stream big downloads straight to disk.';
+
+    // Recipients are told apart by their password, so with no APP_PASSWORD set
+    // there is nothing to share *from* — the whole app is already open.
+    if (!config.auth) return;
+    el('sharing').hidden = false;
+    await listed;
+    await initRecipients({ files: () => bucketFiles });
   })
   .catch((error) => {
     el('bucket-badge').textContent = 'server not configured';
@@ -378,4 +258,3 @@ api
   });
 
 renderResumable();
-refreshFiles();
