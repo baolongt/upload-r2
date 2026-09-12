@@ -13,6 +13,8 @@
 }
 
 * { box-sizing: border-box; }
+/* A class that sets `display` otherwise beats the browser's own rule for [hidden]. */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -183,8 +185,99 @@ button:disabled { opacity: 0.45; cursor: not-allowed; border-color: var(--line);
   font-size: 13px;
 }
 
+/* ---- sharing ---- */
+
+.recipient .status { white-space: normal; }
+
+/* The file picker that opens under one recipient. */
+.picker {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.picker-list {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.picker-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.picker-list label:hover { background: var(--panel-2); }
+.picker-list input { accent-color: var(--accent); flex: none; }
+.picker-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.picker-foot .muted { margin: 0; }
+
+/* Adding a recipient: name and the password they will be given. */
+.recipient-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.recipient-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1 1 180px;
+}
+.recipient-form input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 10px;
+  font: inherit;
+  width: 100%;
+}
+.recipient-form input:focus { outline: none; border-color: var(--accent); }
+#recipient-password { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.5px; }
+.recipient-form-actions { display: flex; gap: 8px; flex: none; }
+.recipient-form .muted { flex-basis: 100%; margin: 0; color: var(--err); }
+
+/* A password is shown once, right after it is generated. */
+.password-box {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  font-size: 13px;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.password-box code {
+  font: 600 17px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 1px;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 12px;
+  user-select: all;
+  word-break: break-all;
+}
+
+.hint-line { margin-top: 8px; }
+
 @media (max-width: 560px) {
   main { padding: 16px; }
   .hint { text-align: left; }
   .item-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .section-head { flex-wrap: wrap; gap: 8px; }
 }

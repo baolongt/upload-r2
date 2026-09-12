@@ -44,10 +44,26 @@ browser                         this server                 Cloudflare R2
   than leaving the download wedged
 - Over 2 GB without disk streaming is refused up front instead of freezing the tab
 
+**Sharing**
+- The admin ticks which files go to which recipient; a recipient signs in with a
+  password and nothing else
+- A recipient sees only what was shared with them — the rest of the bucket is not
+  listed, and asking for another key by hand answers 404
+- Recipients cannot upload, delete or share; the server refuses, it is not just hidden UI
+- Passwords are generated for you (16 characters), stored only as a keyed digest, and
+  shown once so you can pass them on
+- Changing or removing a recipient's password closes the sessions it opened, immediately
+- Deleting a file removes it from every list that pointed at it
+- The whole mapping is one small JSON object in the same bucket — no database, and it
+  survives a redeploy on a platform with an ephemeral filesystem
+
 **Access control**
-- One shared password via `APP_PASSWORD`; leave it unset and the app stays open
+- `APP_PASSWORD` is the admin password; leave it unset and the app stays open
+- One password field for everyone: the admin password opens the whole app, any other is
+  looked up against the recipient list
 - Session is an HMAC-signed, HttpOnly cookie — no session store, no extra dependency
-- Password compared in constant time, and repeated failures from one address are throttled
+- The admin password is compared in constant time, and repeated failures from one address
+  are throttled
 - `/healthz` stays reachable without a session so platform health checks still pass
 
 **Server**
@@ -174,15 +190,23 @@ that aborts incomplete multipart uploads after a few days.
 | `GET` | `/healthz` | Health check for the platform (never behind the password) |
 | `POST` | `/api/login` | Exchange the password for a session cookie |
 | `POST` | `/api/logout` | Drop the session cookie |
-| `GET` | `/api/config` | Bucket name and client defaults |
+| `GET` | `/api/config` | Bucket name, client defaults, and who you are signed in as |
 | `POST` | `/api/uploads/create` | Reserve a key, open a multipart upload |
 | `POST` | `/api/uploads/sign` | Presigned URLs for a batch of part numbers |
 | `GET` | `/api/uploads/parts` | Parts R2 already holds (used to resume) |
 | `POST` | `/api/uploads/complete` | Assemble the parts into the final object |
 | `POST` | `/api/uploads/abort` | Cancel and let R2 discard the parts |
-| `GET` | `/api/files` | List objects under the prefix |
+| `GET` | `/api/files` | Objects under the prefix (admin) or the ones shared with you |
 | `GET` | `/api/files/download-url` | Presigned GET + size, for ranged downloads |
-| `DELETE` | `/api/files` | Delete an object |
+| `DELETE` | `/api/files` | Delete an object **(admin)** |
+| `GET` | `/api/admin/users` | The recipients and what each may download **(admin)** |
+| `POST` | `/api/admin/users` | Add a recipient; returns their password once **(admin)** |
+| `PATCH` | `/api/admin/users/:id` | Rename a recipient **(admin)** |
+| `POST` | `/api/admin/users/:id/password` | Replace their password **(admin)** |
+| `PUT` | `/api/admin/users/:id/files` | Replace the set of files they may download **(admin)** |
+| `DELETE` | `/api/admin/users/:id` | Remove a recipient **(admin)** |
+
+Everything marked **(admin)** answers `403` for a recipient. `/api/uploads/*` is admin-only too.
 
 ## How the chunking works
 
@@ -211,7 +235,7 @@ memory bounded no matter how big the file is.
 ## Tests
 
 ```bash
-npm test        # unit tests for key handling and part sizing
+npm test        # unit tests for key handling, part sizing, sessions and the share list
 npm run test:e2e   # drives a real Chromium against an in-memory R2 mock
 ```
 
@@ -221,9 +245,12 @@ point it at the binary: `CHROMIUM_PATH=/path/to/chrome npm run test:e2e`.
 The end-to-end tests upload a 40 MB file through the actual UI, checks that it
 arrived as 8 chunks and hashes byte-for-byte, then downloads it back with range
 requests and hashes it again. A second test pauses an upload halfway, reloads the
-page, hands the same file back and checks that only the missing chunks are sent.
+page, hands the same file back and checks that only the missing chunks are sent. A third
+signs in as the admin, shares one of two uploaded files with a new recipient, signs in as
+that recipient and checks that they get exactly that file — byte for byte — while the other
+one, uploading and the sharing API all come back refused.
 
-## Password
+## Passwords, and sharing files with people
 
 Set `APP_PASSWORD` and the whole app — the page and every API route — needs a sign-in:
 
@@ -231,23 +258,57 @@ Set `APP_PASSWORD` and the whole app — the page and every API route — needs 
 APP_PASSWORD=something-long-and-random
 ```
 
-The password is exchanged once at `/login` for an HMAC-signed, HttpOnly cookie that
-lasts `SESSION_TTL_HOURS` (7 days by default). Nothing is stored server-side: the
-cookie is just a signed expiry, and the signing key is derived from the password, so
-changing the password signs everyone out. Set `SESSION_SECRET` explicitly if you would
-rather sessions survive a password change.
+That password is the **admin**: upload, delete, and decide who gets what.
 
-Comparisons are constant-time, and ten wrong guesses from one address buy a 15-minute
-timeout. Leave `APP_PASSWORD` unset and the app runs open — the server says so on
-startup.
+### Sharing a file
 
-This is one shared password for one deployment, not user accounts. If you need per-user
-access, roles, or an audit trail of who uploaded what, put the app behind a real
-identity provider instead.
+1. Sign in with `APP_PASSWORD` and upload the file.
+2. In **Who can download what**, click **Add recipient**. Give them a name — a password
+   is generated for you, and shown once. Copy it.
+3. Click **Choose files** on that recipient, tick the files they should get, **Save**.
+4. Send them the link and the password. Nothing else.
+
+They sign in at the same `/login`, land on a page listing only their files, and download
+them with the same chunked, resumable transfer the admin gets. There is no upload box and
+no delete button, and the server refuses both regardless of what the page shows.
+
+### How a password finds its files
+
+One password field decides everything. `APP_PASSWORD` signs you in as the admin; any other
+password is looked up in the recipient list, and whoever it belongs to gets their own files.
+A password that matches nobody is simply wrong.
+
+The mapping lives in one JSON object in your bucket (`_app/shares.json`, set
+`R2_SHARES_KEY` to move it). It sits outside `R2_KEY_PREFIX`, so it never appears in a
+listing and none of the key-taking routes can reach it.
+
+Only a keyed digest of each password is stored, so nothing — the admin UI included — can
+read a password back out. That is why a new password is shown once and can only be
+replaced, never recovered. Replacing one, or removing the recipient, closes any session
+that password had already opened.
+
+### Sessions
+
+A password is exchanged once at `/login` for an HMAC-signed, HttpOnly cookie that lasts
+`SESSION_TTL_HOURS` (7 days by default). Nothing is stored server-side: the cookie carries
+a signed identity and expiry. The signing key is derived from `APP_PASSWORD`, so changing
+it signs everyone out; set `SESSION_SECRET` explicitly if you would rather sessions survive
+that. Recipient passwords are keyed with a secret stored in the mapping itself, so rotating
+`APP_PASSWORD` does *not* invalidate them.
+
+Ten wrong guesses from one address buy a 15-minute timeout. Leave `APP_PASSWORD` unset and
+the app runs open, with sharing switched off — there would be no admin to share *from*, and
+the server says so on startup.
+
+This is a share list, not an identity system. If you need groups, an audit trail of who
+downloaded what, or SSO, put the app behind a real identity provider instead.
 
 ## Notes before deploying
 
 - **Set `APP_PASSWORD`.** Without it, anyone who can reach the server can upload to and
-  delete from your bucket.
+  delete from your bucket — and sharing stays switched off, because there is no admin.
+- **Recipient passwords are as good as the files they unlock.** Use the generated ones;
+  they are 16 characters from a 55-character alphabet. A password you invent is accepted
+  above 8 characters, but it is the only thing standing between the internet and that file.
 - Consider an R2 lifecycle rule to abort incomplete multipart uploads after a few
   days, so cancelled uploads do not accumulate storage cost.

@@ -53,4 +53,30 @@ export const api = {
   downloadUrl: (key) => request(`/api/files/download-url?key=${encodeURIComponent(key)}`),
 
   deleteFile: (key) => request(`/api/files?key=${encodeURIComponent(key)}`, { method: 'DELETE' }),
+
+  /* ---- sharing, admin only ---- */
+
+  listUsers: () => request('/api/admin/users'),
+
+  suggestPassword: () => request('/api/admin/suggest-password'),
+
+  createUser: (name, password) =>
+    request('/api/admin/users', { method: 'POST', body: JSON.stringify({ name, password }) }),
+
+  renameUser: (id, name) =>
+    request(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+
+  resetPassword: (id, password) =>
+    request(`/api/admin/users/${encodeURIComponent(id)}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  deleteUser: (id) => request(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  setUserFiles: (id, keys) =>
+    request(`/api/admin/users/${encodeURIComponent(id)}/files`, {
+      method: 'PUT',
+      body: JSON.stringify({ keys }),
+    }),
 };

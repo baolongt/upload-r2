@@ -38,9 +38,14 @@ export const config = {
   forcePathStyle: process.env.R2_FORCE_PATH_STYLE === 'true',
   // Folder every object is written under, keeps the bucket tidy.
   keyPrefix: (process.env.R2_KEY_PREFIX ?? 'uploads/').replace(/^\/+/, ''),
+  // Where the "who may download what" mapping is kept. Deliberately outside
+  // keyPrefix, so it never appears in a listing and no key-taking endpoint can
+  // reach it.
+  sharesKey: (process.env.R2_SHARES_KEY || '_app/shares.json').replace(/^\/+/, ''),
   // Lifetime of the presigned PUT/GET URLs handed to the browser.
   presignExpires: int('PRESIGN_EXPIRES', 3600),
-  // Shared password for the whole app. Empty means the app stays open to anyone.
+  // The admin password: full access, including handing files to recipients.
+  // Empty means the app stays open to anyone who can reach it.
   password: process.env.APP_PASSWORD || '',
   // Key used to sign session cookies. Derived from the password when unset, so
   // sessions survive a restart without a second variable to manage.

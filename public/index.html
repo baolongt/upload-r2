@@ -74,6 +74,38 @@
           <p class="muted empty">Loading…</p>
         </div>
       </section>
+
+      <section class="card" id="sharing" hidden>
+        <div class="section-head">
+          <h2>Who can download what</h2>
+          <button id="add-recipient">Add recipient</button>
+        </div>
+        <p class="muted">
+          Give someone a password and tick the files they should get. They sign in with that
+          password alone and see nothing else in the bucket.
+        </p>
+
+        <form id="recipient-form" class="recipient-form" hidden>
+          <label>
+            Name
+            <input id="recipient-name" type="text" placeholder="Who is this for?" maxlength="80" required />
+          </label>
+          <label>
+            Password
+            <input id="recipient-password" type="text" minlength="8" spellcheck="false" required />
+          </label>
+          <div class="recipient-form-actions">
+            <button type="submit" id="recipient-save">Add</button>
+            <button type="button" class="ghost" id="recipient-regenerate">Generate another</button>
+            <button type="button" class="ghost" id="recipient-cancel">Cancel</button>
+          </div>
+          <p class="muted" id="recipient-error" role="alert"></p>
+        </form>
+
+        <div id="recipients" class="list">
+          <p class="muted empty">Loading…</p>
+        </div>
+      </section>
     </main>
 
     <script type="module" src="/js/app.js"></script>
